@@ -138,6 +138,7 @@ MulticopterAttitudeControl::parameters_updated()
 {
 	/* Store some of the parameters in a more convenient way & precompute often-used values */
 
+	//三个轴的PID标定值
 	/* roll gains */
 	_attitude_p(0) = _roll_p.get();
 	_rate_p(0) = _roll_rate_p.get();
@@ -171,6 +172,7 @@ MulticopterAttitudeControl::parameters_updated()
 		_lp_filters_d[2].reset(_rates_prev(2));
 	}
 
+	//角速度的上限值
 	/* angular rate limits */
 	_mc_rate_max(0) = math::radians(_roll_rate_max.get());
 	_mc_rate_max(1) = math::radians(_pitch_rate_max.get());
@@ -207,10 +209,12 @@ MulticopterAttitudeControl::parameter_update_poll()
 	/* Check if parameters have changed */
 	orb_check(_params_sub, &updated);
 
+	//这里暂时不深究，反正就是有新的参数来的时候就更新参数 TODO
 	if (updated) {
 		struct parameter_update_s param_update;
 		orb_copy(ORB_ID(parameter_update), _params_sub, &param_update);
 		updateParams();
+		//参数更新以后将参数赋值给模块私有变量
 		parameters_updated();
 	}
 }
@@ -366,8 +370,9 @@ MulticopterAttitudeControl::sensor_bias_poll()
 void
 MulticopterAttitudeControl::control_attitude(float dt)
 {
+	//更新期望目标姿态，位置环给出的期望姿态
 	vehicle_attitude_setpoint_poll();
-	_thrust_sp = _v_att_sp.thrust;
+	_thrust_sp = _v_att_sp.thrust;//推力数据
 
 	/* prepare yaw weight from the ratio between roll/pitch and yaw gains */
 	Vector3f attitude_gain = _attitude_p;
@@ -375,6 +380,7 @@ MulticopterAttitudeControl::control_attitude(float dt)
 	const float yaw_w = math::constrain(attitude_gain(2) / roll_pitch_gain, 0.f, 1.f);
 	attitude_gain(2) = roll_pitch_gain;
 
+	//获得当前姿态和目标姿态四元数
 	/* get estimated and desired vehicle attitude */
 	Quatf q(_v_att.q);
 	Quatf qd(_v_att_sp.q_d);
@@ -384,37 +390,51 @@ MulticopterAttitudeControl::control_attitude(float dt)
 	qd.normalize();
 
 	/* calculate reduced desired attitude neglecting vehicle's yaw to prioritize roll and pitch */
-	Vector3f e_z = q.dcm_z();
-	Vector3f e_z_d = qd.dcm_z();
-	Quatf qd_red(e_z, e_z_d);
+	//先忽略飞机的偏航，优先调节  横滚和俯仰来对齐z轴
+	Vector3f e_z = q.dcm_z(); //变换到旋转矩阵，同时选定z轴 TODO
+	Vector3f e_z_d = qd.dcm_z(); //变换到旋转矩阵，同时选定z轴TODO
+	Quatf qd_red(e_z, e_z_d);//算出e_z到e_z_d的最短旋转
 
 	if (abs(qd_red(1)) > (1.f - 1e-5f) || abs(qd_red(2)) > (1.f - 1e-5f)) {
 		/* In the infinitesimal corner case where the vehicle and thrust have the completely opposite direction,
 		 * full attitude control anyways generates no yaw input and directly takes the combination of
 		 * roll and pitch leading to the correct desired yaw. Ignoring this case would still be totally safe and stable. */
+		//这是一种特殊情况，很少出现。
+  		//就是二者的z轴基本重合，此时直接当作旋转完成
 		qd_red = qd;
 
 	} else {
 		/* transform rotation from current to desired thrust vector into a world frame reduced desired attitude */
+		//将“最短旋转”旋转到机体坐标系
+		//得到代表中间姿态的旋转矩阵o
+		//此时可以看成z轴旋转到相应方向后的矩阵
 		qd_red *= q;
 	}
 
 	/* mix full and reduced desired attitude */
-	Quatf q_mix = qd_red.inversed() * qd;
-	q_mix *= math::signNoZero(q_mix(0));
+	Quatf q_mix = qd_red.inversed() * qd;//将表示中间姿态的旋转矩阵与期望进行叉乘，得到x,y轴的误差
+	q_mix *= math::signNoZero(q_mix(0));//q_mix乘上符号矩阵
 	/* catch numerical problems with the domain of acosf and asinf */
-	q_mix(0) = math::constrain(q_mix(0), -1.f, 1.f);
-	q_mix(3) = math::constrain(q_mix(3), -1.f, 1.f);
+	q_mix(0) = math::constrain(q_mix(0), -1.f, 1.f);//进行限幅
+	q_mix(3) = math::constrain(q_mix(3), -1.f, 1.f);//进行旋转z轴的限幅
+	  	//将代表中间姿态的旋转矩阵进行z轴旋转，这次旋转不是简单的旋转，而是引入了步长的，简单来说，就是进行解耦后的旋转
+  	//也代表最终由期望旋转进行合理化，进行解耦后产生最终要使用期望旋转
+  	//qd就是这个最终的旋转
 	qd = qd_red * Quatf(cosf(yaw_w * acosf(q_mix(0))), 0, 0, sinf(yaw_w * asinf(q_mix(3))));
 
 	/* quaternion attitude control law, qe is rotation from q to qd */
+	//根据四元数姿态控制律
+  	//qe是从q到qd的循环
+  	//算出由       “当前姿态”       到        “解耦后的期望旋转”           的旋转四元数
 	Quatf qe = q.inversed() * qd;
 
 	/* using sin(alpha/2) scaled rotation axis as attitude error (see quaternion definition by axis angle)
 	 * also taking care of the antipodal unit quaternion ambiguity */
+	//计算最终的旋转角
 	Vector3f eq = 2.f * math::signNoZero(qe(0)) * qe.imag();
 
 	/* calculate angular rates setpoint */
+	//计算角速度设定值
 	_rates_sp = eq.emult(attitude_gain);
 
 	/* Feed forward the yaw setpoint rate.
@@ -425,11 +445,12 @@ MulticopterAttitudeControl::control_attitude(float dt)
 	 * This yields a vector representing the commanded rotatation around the world z-axis expressed in the body frame
 	 * such that it can be added to the rates setpoint.
 	 */
+	//进行前馈控制
 	Vector3f yaw_feedforward_rate = q.inversed().dcm_z();
 	yaw_feedforward_rate *= _v_att_sp.yaw_sp_move_rate * _yaw_ff.get();
 	_rates_sp += yaw_feedforward_rate;
 
-
+	//进行总的速度的限制
 	/* limit rates */
 	for (int i = 0; i < 3; i++) {
 		if ((_v_control_mode.flag_control_velocity_enabled || _v_control_mode.flag_control_auto_enabled) &&
@@ -488,6 +509,7 @@ MulticopterAttitudeControl::control_attitude_rates(float dt)
 		_rates_int.zero();
 	}
 
+	// 获得当前可用传感器上获得的角速率值。
 	// get the raw gyro data and correct for thermal errors
 	Vector3f rates;
 
@@ -512,35 +534,49 @@ MulticopterAttitudeControl::control_attitude_rates(float dt)
 		rates(2) = _sensor_gyro.z;
 	}
 
+	// 从sensor的坐标系转换到飞机body的坐标系，这个_board_rotation应该就是校准出来的一个数据
 	// rotate corrected measurements from sensor to body frame
 	rates = _board_rotation * rates;
 
+	// 校准误差，不知道怎么误差值怎么获得的 TODO
 	// correct for in-run bias errors
 	rates(0) -= _sensor_bias.gyro_x_bias;
 	rates(1) -= _sensor_bias.gyro_y_bias;
 	rates(2) -= _sensor_bias.gyro_z_bias;
 
+	// 调试好的PID参数呀, TPA油门衰减, 
+	// 当TPA=50（%），tpa_breakpoint=1500（假设油门范围1000-2000）时，会发生：
+	// 油门>=1500时，PID参数开始衰减；
+	// 3/4油门（1750）时，PID参数衰减25%；
+	// 全油门（2000）时，PID参数衰减50%；
+	// TPA会导致在高油门时旋转角速度增加，
+	// 这样在因为PID参数和角速度的耦合使油门升高的情况下可以获得快速翻转横滚的能力。
+
 	Vector3f rates_p_scaled = _rate_p.emult(pid_attenuations(_tpa_breakpoint_p.get(), _tpa_rate_p.get()));
 	Vector3f rates_i_scaled = _rate_i.emult(pid_attenuations(_tpa_breakpoint_i.get(), _tpa_rate_i.get()));
 	Vector3f rates_d_scaled = _rate_d.emult(pid_attenuations(_tpa_breakpoint_d.get(), _tpa_rate_d.get()));
 
+	//这个_rates_sp就是前面外环算出来的目标角速率，rates_err就是目标值与当前值得偏差
 	/* angular rates error */
 	Vector3f rates_err = _rates_sp - rates;
 
+	// 低通滤波后求delta会更平滑些
 	/* apply low-pass filtering to the rates for D-term */
 	Vector3f rates_filtered(
 		_lp_filters_d[0].apply(rates(0)),
 		_lp_filters_d[1].apply(rates(1)),
 		_lp_filters_d[2].apply(rates(2)));
 
-	_att_control = rates_p_scaled.emult(rates_err) +
-		       _rates_int -
-		       rates_d_scaled.emult(rates_filtered - _rates_prev_filtered) / dt +
-		       _rate_ff.emult(_rates_sp);
+	//内环计算核心代码，就一个PD公式 TODO
+	_att_control = rates_p_scaled.emult(rates_err) +//比例
+		       _rates_int - //积分
+		       rates_d_scaled.emult(rates_filtered - _rates_prev_filtered) / dt +//微分
+		       _rate_ff.emult(_rates_sp);//前馈
 
 	_rates_prev = rates;
 	_rates_prev_filtered = rates_filtered;
 
+	//I部分根据油门的大小来确定是不是调整积分值
 	/* update integral only if motors are providing enough thrust to be effective */
 	if (_thrust_sp > MIN_TAKEOFF_THRUST) {
 		for (int i = AXIS_INDEX_ROLL; i < AXIS_COUNT; i++) {
@@ -585,23 +621,35 @@ MulticopterAttitudeControl::control_attitude_rates(float dt)
 	}
 }
 
+// 这个函数才是模块的重点
 void
 MulticopterAttitudeControl::run()
 {
-
+	// 将相应的数据订阅好
 	/*
 	 * do subscriptions
 	 */
+	//当前姿态，应该是卡尔曼滤波后生成的姿态数据，有三个轴上的角速度和一个表明当前姿态的四元数
+	//还有个reset四元组数据，目前不知道用来干嘛 TODO
 	_v_att_sub = orb_subscribe(ORB_ID(vehicle_attitude));
+	//位置控制环给出的目标姿态命令，主要是一个目标姿态四元数和一个推力数据
 	_v_att_sp_sub = orb_subscribe(ORB_ID(vehicle_attitude_setpoint));
+	//这个消息好像是fw和vtol发出来的，不知道为什么mc要接收 TODO
 	_v_rates_sp_sub = orb_subscribe(ORB_ID(vehicle_rates_setpoint));
+	//commander 给出的当前模式命令，armed flag， manual flag，auto flag等等
 	_v_control_mode_sub = orb_subscribe(ORB_ID(vehicle_control_mode));
+	//用于判断参数有没有更新
 	_params_sub = orb_subscribe(ORB_ID(parameter_update));
+	//遥控器直接给的数据，每个通道的值，几个模式switch的值等   acro mode用到
 	_manual_control_sp_sub = orb_subscribe(ORB_ID(manual_control_setpoint));
+	//飞机的当前状态，飞行模式，等flag
 	_vehicle_status_sub = orb_subscribe(ORB_ID(vehicle_status));
+	//对马达行为的一些限制
 	_motor_limits_sub = orb_subscribe(ORB_ID(multirotor_motor_limits));
+	//电池的状态
 	_battery_status_sub = orb_subscribe(ORB_ID(battery_status));
 
+	//考虑高端飞控有两个以上陀螺仪芯片，orb_group_count(ORB_ID(sensor_gyro))用于获得陀螺仪device数量
 	_gyro_count = math::min(orb_group_count(ORB_ID(sensor_gyro)), MAX_GYRO_COUNT);
 
 	if (_gyro_count == 0) {
@@ -612,7 +660,9 @@ MulticopterAttitudeControl::run()
 		_sensor_gyro_sub[s] = orb_subscribe_multi(ORB_ID(sensor_gyro), s);
 	}
 
+	// 修正过的传感器值，角速度，加速度，气压，以及被选用的传感器device id
 	_sensor_correction_sub = orb_subscribe(ORB_ID(sensor_correction));
+	//TODO: 传感器偏差？ 目前还不知道这是用来干嘛的？
 	_sensor_bias_sub = orb_subscribe(ORB_ID(sensor_bias));
 
 	/* wakeup source: gyro data from sensor selected by the sensor app */
@@ -620,14 +670,15 @@ MulticopterAttitudeControl::run()
 	poll_fds.events = POLLIN;
 
 	const hrt_abstime task_start = hrt_absolute_time();
-	hrt_abstime last_run = task_start;
-	float dt_accumulator = 0.f;
+	hrt_abstime last_run = task_start;   //用于计算两次算法执行的时间差
+	float dt_accumulator = 0.f; //最后算法运行次数和间隔的统计用的
 	int loop_counter = 0;
 
 	while (!should_exit()) {
-
+		//有意思啊_selected_gyro在sensor_correction_poll里面才会被更新，但是这里还没更新过呢，就直接用了
 		poll_fds.fd = _sensor_gyro_sub[_selected_gyro];
 
+		// 用sensor_gyro数据进行阻塞，只有导航系统数据更新了，才有再一次执行姿态算法的必要
 		/* wait for up to 100ms for data */
 		int pret = px4_poll(&poll_fds, 1, 100);
 
@@ -644,7 +695,7 @@ MulticopterAttitudeControl::run()
 			continue;
 		}
 
-		perf_begin(_loop_perf);
+		perf_begin(_loop_perf); //用于记录算法执行的时间
 
 		/* run controller on gyro changes */
 		if (poll_fds.revents & POLLIN) {
@@ -660,11 +711,13 @@ MulticopterAttitudeControl::run()
 				dt = 0.02f;
 			}
 
+			//更新gyro传感器数据
 			/* copy gyro data */
 			orb_copy(ORB_ID(sensor_gyro), _sensor_gyro_sub[_selected_gyro], &_sensor_gyro);
 
+			//更新所有订阅的数据
 			/* check for updates in other topics */
-			parameter_update_poll();
+			parameter_update_poll();//更新系统参数
 			vehicle_control_mode_poll();
 			vehicle_manual_poll();
 			vehicle_status_poll();
@@ -685,7 +738,8 @@ MulticopterAttitudeControl::run()
 			}
 
 			if (_v_control_mode.flag_control_attitude_enabled) {
-
+				// 自动模式的下外环，作用于角度差，产生期望的角速度
+				// P loop for angular error
 				control_attitude(dt);
 
 				/* publish attitude rates setpoint */
@@ -713,6 +767,7 @@ MulticopterAttitudeControl::run()
 					_rates_sp = man_rate_sp.emult(_acro_rate_max);
 					_thrust_sp = _manual_control_sp.z;
 
+					//手动模式下，直接把遥控器数据给过去，然后直接进入内环
 					/* publish attitude rates setpoint */
 					_v_rates_sp.roll = _rates_sp(0);
 					_v_rates_sp.pitch = _rates_sp(1);
@@ -728,6 +783,7 @@ MulticopterAttitudeControl::run()
 					}
 
 				} else {
+					//直接从其他模块来的姿态控制数据，可能是offboard ros啥的？ TODO
 					/* attitude controller disabled, poll rates setpoint topic */
 					vehicle_rates_setpoint_poll();
 					_rates_sp(0) = _v_rates_sp.roll;
@@ -738,8 +794,11 @@ MulticopterAttitudeControl::run()
 			}
 
 			if (_v_control_mode.flag_control_rates_enabled) {
+				//内环，作用于速度差，产生控制量
+				// a PID loop for angular rate error.
 				control_attitude_rates(dt);
 
+				// 将最终结果输出给每个执行器，最终由混控输出给电机
 				/* publish actuator controls */
 				_actuators.control[0] = (PX4_ISFINITE(_att_control(0))) ? _att_control(0) : 0.0f;
 				_actuators.control[1] = (PX4_ISFINITE(_att_control(1))) ? _att_control(1) : 0.0f;
@@ -756,6 +815,7 @@ MulticopterAttitudeControl::run()
 					}
 				}
 
+				//发布数据，将数据发布到0号控制组
 				if (!_actuators_0_circuit_breaker_enabled) {
 					if (_actuators_0_pub != nullptr) {
 
@@ -767,6 +827,7 @@ MulticopterAttitudeControl::run()
 
 				}
 
+				//调整后的积分和当前角速度在这里输出，目前不知道做什么用 TODO
 				/* publish controller status */
 				rate_ctrl_status_s rate_ctrl_status;
 				rate_ctrl_status.timestamp = hrt_absolute_time();
@@ -827,7 +888,7 @@ MulticopterAttitudeControl::run()
 
 		}
 
-		perf_end(_loop_perf);
+		perf_end(_loop_perf);//用于记录算法执行的时间
 	}
 
 	orb_unsubscribe(_v_att_sub);
@@ -850,6 +911,8 @@ MulticopterAttitudeControl::run()
 
 int MulticopterAttitudeControl::task_spawn(int argc, char *argv[])
 {
+	// 以run_trampoline为主函数启动模块任务，
+	// run_trampoline在父类中实现，负责实例化，并在实例化之后调用子类里run函数，run函数才是这里实现算法的地方
 	_task_id = px4_task_spawn_cmd("mc_att_control",
 					   SCHED_DEFAULT,
 					   SCHED_PRIORITY_ATTITUDE_CONTROL,
@@ -875,7 +938,9 @@ int MulticopterAttitudeControl::custom_command(int argc, char *argv[])
 	return print_usage("unknown command");
 }
 
+// 模块入口，如果模块在makefile里面配置的话，系统会直接调用这个函数
 int mc_att_control_main(int argc, char *argv[])
 {
+	//这里的main在父类里面实现，会判断相应的命令再进行处理，如果判断结果是启动模块的话，就是调用子类里的task_spawn函数
 	return MulticopterAttitudeControl::main(argc, argv);
 }

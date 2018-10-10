@@ -159,10 +159,12 @@ public:
 		argv += 1;
 #endif
 
+		// 实例化子类
 		_object = T::instantiate(argc, argv);
 
 		if (_object) {
 			T *object = (T *)_object;
+			// 实例化成功后调用子类的run函数执行相应算法。
 			object->run();
 
 		} else {
@@ -188,6 +190,7 @@ public:
 			PX4_ERR("Task already running");
 
 		} else {
+			// 调用子类的task_spawn函数，从而启动该模块
 			ret = T::task_spawn(argc, argv);
 
 			if (ret < 0) {
