@@ -390,24 +390,22 @@ MulticopterAttitudeControl::control_attitude(float dt)
 	qd.normalize();
 
 	/* calculate reduced desired attitude neglecting vehicle's yaw to prioritize roll and pitch */
-	//先忽略飞机的偏航，优先调节  横滚和俯仰来对齐z轴
-	Vector3f e_z = q.dcm_z(); //变换到旋转矩阵，同时选定z轴 TODO
-	Vector3f e_z_d = qd.dcm_z(); //变换到旋转矩阵，同时选定z轴TODO
-	Quatf qd_red(e_z, e_z_d);//算出e_z到e_z_d的最短旋转
+	//这里先对齐z轴，对齐的方法貌似可里理解为将旋转矩阵拆分，最后一列直接用上就是对齐z轴的，
+	//然后在旋转矩阵x z轴对齐的时候乘以一百分比，偏航的调整反应不需要那么快
+	Vector3f e_z = q.dcm_z(); //四元数本身就是从一个直角坐标系上旋转过来的坐标系，所以可以转化为旋转矩阵，取旋转矩阵的最后一列，z轴的旋转用于比对
+	Vector3f e_z_d = qd.dcm_z(); //同上
+	Quatf qd_red(e_z, e_z_d);//求两个向量的旋转矩阵，罗德里格旋转？ TODO
 
 	if (abs(qd_red(1)) > (1.f - 1e-5f) || abs(qd_red(2)) > (1.f - 1e-5f)) {
 		/* In the infinitesimal corner case where the vehicle and thrust have the completely opposite direction,
 		 * full attitude control anyways generates no yaw input and directly takes the combination of
 		 * roll and pitch leading to the correct desired yaw. Ignoring this case would still be totally safe and stable. */
-		//这是一种特殊情况，很少出现。
-  		//就是二者的z轴基本重合，此时直接当作旋转完成
+		//就是目标姿态和当前姿态的z轴重合的情况下就直接当作旋转完成，TODO 为什么是qd？
 		qd_red = qd;
 
 	} else {
 		/* transform rotation from current to desired thrust vector into a world frame reduced desired attitude */
-		//将“最短旋转”旋转到机体坐标系
-		//得到代表中间姿态的旋转矩阵o
-		//此时可以看成z轴旋转到相应方向后的矩阵
+		// 奖当前姿态用旋转矩阵旋转，得到z轴对齐后的中间姿态
 		qd_red *= q;
 	}
 
