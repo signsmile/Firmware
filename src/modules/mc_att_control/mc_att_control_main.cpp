@@ -409,15 +409,14 @@ MulticopterAttitudeControl::control_attitude(float dt)
 		qd_red *= q;
 	}
 
-	/* mix full and reduced desired attitude */
+	/* mix full and rreduced desired attitude */
 	Quatf q_mix = qd_red.inversed() * qd;//将表示中间姿态的旋转矩阵与期望进行叉乘，得到x,y轴的误差
 	q_mix *= math::signNoZero(q_mix(0));//q_mix乘上符号矩阵
 	/* catch numerical problems with the domain of acosf and asinf */
 	q_mix(0) = math::constrain(q_mix(0), -1.f, 1.f);//进行限幅
-	q_mix(3) = math::constrain(q_mix(3), -1.f, 1.f);//进行旋转z轴的限幅
-	  	//将代表中间姿态的旋转矩阵进行z轴旋转，这次旋转不是简单的旋转，而是引入了步长的，简单来说，就是进行解耦后的旋转
-  	//也代表最终由期望旋转进行合理化，进行解耦后产生最终要使用期望旋转
-  	//qd就是这个最终的旋转
+	q_mix(3) = math::constrain(q_mix(3), -1.f, 1.f);//进行旋转z轴的限幅   超过正负1的话没法进行acosf 以及asinf运算
+  	
+	//qd就是这个最终的旋转，俯仰是以100%进行旋转的，得到中间姿态qd_red，yaw是以yaw_w为比例进行旋转的，将中间姿态进行偏航旋转，然后得到最终旋转命令
 	qd = qd_red * Quatf(cosf(yaw_w * acosf(q_mix(0))), 0, 0, sinf(yaw_w * asinf(q_mix(3))));
 
 	/* quaternion attitude control law, qe is rotation from q to qd */
