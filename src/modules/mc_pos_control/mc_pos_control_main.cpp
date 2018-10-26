@@ -1487,7 +1487,7 @@ void
 MulticopterPositionControl::control_offboard()
 {
 	if (_pos_sp_triplet.current.valid) {
-
+		//offboard 模块会发控制命令，如果需要override position 就  获取position位置，如果需要veloctiy 就直接获取velocity
 		if (_control_mode.flag_control_position_enabled && _pos_sp_triplet.current.position_valid) {
 			/* control position */
 			_pos_sp(0) = _pos_sp_triplet.current.x;
