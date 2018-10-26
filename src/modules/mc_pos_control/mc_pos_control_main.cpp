@@ -812,6 +812,9 @@ MulticopterPositionControl::update_ref()
 	}
 }
 
+//将当期位置赋值在目标位置，这个函数会在好几个地方运行，
+//用于当模式发生转化时保证位置上的连续性，不会发生抖动，或者进行位置的跟踪，当期的位置就是期望的位置。
+//用于初始化阶段或者当位置控制模式发生变化时。
 void
 MulticopterPositionControl::reset_pos_sp()
 {
@@ -1259,6 +1262,7 @@ MulticopterPositionControl::control_manual()
 	matrix::Vector3f man_vel_sp;
 
 	if (_control_mode.flag_control_altitude_enabled) {
+		//手动模式时，飞机的垂直方向的数据由油门决定
 		/* set vertical velocity setpoint with throttle stick, remapping of manual.z [0,1] to up and down command [-1,1] */
 		man_vel_sp(2) = -math::expo_deadzone((_manual.z - 0.5f) * 2.f, _z_vel_man_expo.get(), _hold_dz.get());
 
@@ -1267,6 +1271,7 @@ MulticopterPositionControl::control_manual()
 	}
 
 	if (_control_mode.flag_control_position_enabled) {
+		//手动模式时，飞机的速度数据直接来自遥控器
 		/* set horizontal velocity setpoint with roll/pitch stick */
 		man_vel_sp(0) = math::expo_deadzone(_manual.x, _xy_vel_man_expo.get(), _hold_dz.get());
 		man_vel_sp(1) = math::expo_deadzone(_manual.y, _xy_vel_man_expo.get(), _hold_dz.get());
@@ -1287,6 +1292,7 @@ MulticopterPositionControl::control_manual()
 	/* prepare yaw to rotate into NED frame */
 	float yaw_input_frame = _control_mode.flag_control_fixed_hdg_enabled ? _yaw_takeoff : _att_sp.yaw_body;
 
+	//转换成地理坐标系的速度
 	/* setpoint in NED frame */
 	man_vel_sp = matrix::Dcmf(matrix::Eulerf(0.0f, 0.0f, yaw_input_frame)) * man_vel_sp;
 
@@ -1303,6 +1309,7 @@ MulticopterPositionControl::control_manual()
 	/* Setpoint scaled to cruise speed */
 	man_vel_sp = man_vel_sp.emult(vel_cruise_scale);
 
+	//手动不打舵的时候，就需要判断是不是要执行定高了
 	/*
 	 * assisted velocity mode: user controls velocity, but if velocity is small enough, position
 	 * hold is activated for the corresponding axis
@@ -1337,6 +1344,7 @@ MulticopterPositionControl::control_manual()
 		}
 	}
 
+	//定高模式是否激活
 	/* check horizontal hold engaged flag */
 	if (_pos_hold_engaged) {
 
@@ -2359,10 +2367,12 @@ void
 MulticopterPositionControl::calculate_velocity_setpoint()
 {
 	/* run position & altitude controllers, if enabled (otherwise use already computed velocity setpoints) */
-	if (_run_pos_control) {
+	if (_run_pos_control) {//是否要进行位置闭环
 
 		// If for any reason, we get a NaN position setpoint, we better just stay where we are.
 		if (PX4_ISFINITE(_pos_sp(0)) && PX4_ISFINITE(_pos_sp(1))) {
+			//(_pos_sp(0) - _pos(0)是位置差，  _pos_p应该是用户设置的参数 TODO？ 需核实
+			//0 和 1 都是什么? 一个经度，一个维度
 			_vel_sp(0) = (_pos_sp(0) - _pos(0)) * _pos_p(0);
 			_vel_sp(1) = (_pos_sp(1) - _pos(1)) * _pos_p(1);
 
@@ -2379,7 +2389,7 @@ MulticopterPositionControl::calculate_velocity_setpoint()
 		limit_altitude();
 	}
 
-	if (_run_alt_control) {
+	if (_run_alt_control) {//是否要进行高度闭环，得到垂直上面的速度
 		if (PX4_ISFINITE(_pos_sp(2))) {
 			_vel_sp(2) = (_pos_sp(2) - _pos(2)) * _pos_p(2);
 
@@ -2916,20 +2926,30 @@ bool MulticopterPositionControl::manual_wants_landing()
 	return (has_manual_control_present && (_manual.z < 0.15f || !_control_mode.flag_control_climb_rate_enabled));
 }
 
+//启动主任务，这里的流程跟姿态算法有点不一样，代码一致性不好啊
 void
 MulticopterPositionControl::task_main()
 {
 	/*
 	 * do subscriptions
 	 */
+	//飞机的当前状态，飞行模式，等flag
 	_vehicle_status_sub = orb_subscribe(ORB_ID(vehicle_status));
+	//更load相关的一些信息
 	_vehicle_land_detected_sub = orb_subscribe(ORB_ID(vehicle_land_detected));
+	//当前姿态，应该是卡尔曼滤波后生成的姿态数据，有三个轴上的角速度和一个表明当前姿态的四元数
 	_vehicle_attitude_sub = orb_subscribe(ORB_ID(vehicle_attitude));
+	//commander 给出的当前模式命令，armed flag， manual flag，auto flag等等
 	_control_mode_sub = orb_subscribe(ORB_ID(vehicle_control_mode));
+	//用于判断参数有没有更新
 	_params_sub = orb_subscribe(ORB_ID(parameter_update));
+	//遥控器直接给的数据，每个通道的值，几个模式switch的值等   acro mode用到
 	_manual_sub = orb_subscribe(ORB_ID(manual_control_setpoint));
+	//飞机在地理坐标系上的位置，速度等信息
 	_local_pos_sub = orb_subscribe(ORB_ID(vehicle_local_position));
+	//目标位置
 	_pos_sp_triplet_sub = orb_subscribe(ORB_ID(position_setpoint_triplet));
+	//返回点的位置
 	_home_pos_sub = orb_subscribe(ORB_ID(home_position));
 
 	parameters_update(true);
@@ -2968,8 +2988,10 @@ MulticopterPositionControl::task_main()
 			continue;
 		}
 
+		//更新传感器数据
 		poll_subscriptions();
 
+		//更新用户参数
 		parameters_update(false);
 
 		hrt_abstime t = hrt_absolute_time();
@@ -2997,7 +3019,7 @@ MulticopterPositionControl::task_main()
 		}
 
 		/* reset flags when landed */
-		if (_vehicle_land_detected.landed) {
+		if (_vehicle_land_detected.landed) {//如果收到load数据，会强制更新一些标记位，让飞机自动飞行
 			_reset_pos_sp = true;
 			_reset_alt_sp = true;
 			_do_reset_alt_pos_flag = true;
@@ -3029,7 +3051,7 @@ MulticopterPositionControl::task_main()
 		}
 
 		/* reset setpoints and integrators VTOL in FW mode */
-		if (_vehicle_status.is_vtol && !_vehicle_status.is_rotary_wing) {
+		if (_vehicle_status.is_vtol && !_vehicle_status.is_rotary_wing) { 
 			_reset_alt_sp = true;
 			_reset_int_xy = true;
 			_reset_int_z = true;
@@ -3096,6 +3118,7 @@ MulticopterPositionControl::task_main()
 			_flight_tasks.switchTask(FlightTaskIndex::None);
 		}
 
+		//飞行任务，使命模式吗？ TODO
 		if (_test_flight_tasks.get() && _flight_tasks.isAnyTaskActive()) {
 
 			_flight_tasks.update();
@@ -3173,13 +3196,14 @@ MulticopterPositionControl::task_main()
 			publish_local_pos_sp();
 			publish_attitude();
 
-		} else {
+		} else {//正常任务
 			if (_control_mode.flag_control_altitude_enabled ||
 			    _control_mode.flag_control_position_enabled ||
 			    _control_mode.flag_control_climb_rate_enabled ||
 			    _control_mode.flag_control_velocity_enabled ||
 			    _control_mode.flag_control_acceleration_enabled) {
 
+				//这里才是控制的核心部分
 				do_control();
 
 				/* fill local position, velocity and thrust setpoint */
@@ -3386,12 +3410,13 @@ MulticopterPositionControl::landdetection_thrust_limit(matrix::Vector3f &thrust_
 int
 MulticopterPositionControl::start()
 {
+	//px4_task_spawn_cmd为POSIX任务创建函数
 	/* start the task */
 	_control_task = px4_task_spawn_cmd("mc_pos_control",
 					   SCHED_DEFAULT,
 					   SCHED_PRIORITY_POSITION_CONTROL,
 					   1900,
-					   (px4_main_t)&MulticopterPositionControl::task_main_trampoline,
+					   (px4_main_t)&MulticopterPositionControl::task_main_trampoline,//回调函数
 					   nullptr);
 
 	if (_control_task < 0) {
@@ -3402,6 +3427,7 @@ MulticopterPositionControl::start()
 	return OK;
 }
 
+//模块入口
 int mc_pos_control_main(int argc, char *argv[])
 {
 	if (argc < 2) {
@@ -3423,6 +3449,7 @@ int mc_pos_control_main(int argc, char *argv[])
 			return 1;
 		}
 
+		//启动模块
 		if (OK != pos_control::g_control->start()) {
 			delete pos_control::g_control;
 			pos_control::g_control = nullptr;
