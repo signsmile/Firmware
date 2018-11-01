@@ -261,12 +261,13 @@ void AttitudeEstimatorQ::task_main()
 	perf_counter_t _perf_mag(perf_alloc_once(PC_ELAPSED, "sim_mag_delay"));
 #endif
 
-	_sensors_sub = orb_subscribe(ORB_ID(sensor_combined));
-	_vision_sub = orb_subscribe(ORB_ID(vehicle_vision_attitude));
+	//订阅数据
+	_sensors_sub = orb_subscribe(ORB_ID(sensor_combined));//传感器数据
+	_vision_sub = orb_subscribe(ORB_ID(vehicle_vision_attitude));//？ 好像已经没有这个msg了吧，从simulator里面来的
 	_mocap_sub = orb_subscribe(ORB_ID(att_pos_mocap));
-	_params_sub = orb_subscribe(ORB_ID(parameter_update));
-	_global_pos_sub = orb_subscribe(ORB_ID(vehicle_global_position));
-	_magnetometer_sub = orb_subscribe(ORB_ID(vehicle_magnetometer));
+	_params_sub = orb_subscribe(ORB_ID(parameter_update)); //参数更新标记
+	_global_pos_sub = orb_subscribe(ORB_ID(vehicle_global_position));//position_estimator_inav发出来的，飞机当前的位置数据
+	_magnetometer_sub = orb_subscribe(ORB_ID(vehicle_magnetometer));//磁偏角
 
 	update_parameters(true);
 
@@ -277,7 +278,7 @@ void AttitudeEstimatorQ::task_main()
 	fds[0].events = POLLIN;
 
 	while (!_task_should_exit) {
-		int ret = px4_poll(fds, 1, 1000);
+		int ret = px4_poll(fds, 1, 1000);//传感器数据更新才执行循环
 
 		if (ret < 0) {
 			// Poll error, sleep and try again
@@ -298,13 +299,14 @@ void AttitudeEstimatorQ::task_main()
 
 		if (orb_copy(ORB_ID(sensor_combined), _sensors_sub, &sensors) == PX4_OK) {
 			// Feed validator with recent sensor data
-
+			//更新陀螺仪数据，（角速度）
 			if (sensors.timestamp > 0) {
 				_gyro(0) = sensors.gyro_rad[0];
 				_gyro(1) = sensors.gyro_rad[1];
 				_gyro(2) = sensors.gyro_rad[2];
 			}
 
+			// 更新加速度计数据 线性的加速度值
 			if (sensors.accelerometer_timestamp_relative != sensor_combined_s::RELATIVE_TIMESTAMP_INVALID) {
 				_accel(0) = sensors.accelerometer_m_s2[0];
 				_accel(1) = sensors.accelerometer_m_s2[1];
@@ -325,7 +327,7 @@ void AttitudeEstimatorQ::task_main()
 
 		if (magnetometer_updated) {
 			vehicle_magnetometer_s magnetometer = {};
-
+			//更新指南针数据
 			if (orb_copy(ORB_ID(vehicle_magnetometer), _magnetometer_sub, &magnetometer) == PX4_OK) {
 				_mag(0) = magnetometer.magnetometer_ga[0];
 				_mag(1) = magnetometer.magnetometer_ga[1];
@@ -336,10 +338,10 @@ void AttitudeEstimatorQ::task_main()
 					continue;
 				}
 			}
-
 		}
 
 		// Update vision and motion capture heading
+		// 视觉处理的数据吧？
 		bool vision_updated = false;
 		orb_check(_vision_sub, &vision_updated);
 
@@ -408,6 +410,7 @@ void AttitudeEstimatorQ::task_main()
 					if (_vel_prev_t != 0 && gpos.timestamp != _vel_prev_t) {
 						float vel_dt = (gpos.timestamp - _vel_prev_t) / 1e6f;
 						/* calculate acceleration in body frame */
+						// 基于飞机frame的加速度值，称之为运动加速度，为后面的重力加速度提纯所用
 						_pos_acc = _q.conjugate_inversed((vel - _vel_prev) / vel_dt);
 					}
 
@@ -429,6 +432,7 @@ void AttitudeEstimatorQ::task_main()
 		last_time = now;
 
 		if (update(dt)) {
+			// 这就生成飞机姿态了？
 			vehicle_attitude_s att = {
 				.timestamp = sensors.timestamp,
 				.rollspeed = _rates(0),
@@ -442,6 +446,7 @@ void AttitudeEstimatorQ::task_main()
 
 			/* the instance count is not used here */
 			int att_inst;
+			// 发布姿态数据
 			orb_publish_auto(ORB_ID(vehicle_attitude), &_att_pub, &att, &att_inst, ORB_PRIO_HIGH);
 		}
 	}
@@ -510,19 +515,21 @@ void AttitudeEstimatorQ::update_parameters(bool force)
 	}
 }
 
+//初始化数据，由加速度计和磁力计初始化旋转矩阵和四元数
 bool AttitudeEstimatorQ::init()
 {
 	// Rotation matrix can be easily constructed from acceleration and mag field vectors
 	// 'k' is Earth Z axis (Down) unit vector in body frame
-	Vector3f k = -_accel;
+	Vector3f k = -_accel;//加速度数据从msg里面直接过来，第一次接收时，飞机趴着不动，应该就是重力加速度g
 	k.normalize();
 
 	// 'i' is Earth X axis (North) unit vector in body frame, orthogonal with 'k'
+	// mag是北边，k是g，  施密特正交，强制使i与k垂直
 	Vector3f i = (_mag - k * (_mag * k));
 	i.normalize();
 
 	// 'j' is Earth Y axis (East) unit vector in body frame, orthogonal with 'k' and 'i'
-	Vector3f j = k % i;
+	Vector3f j = k % i;//j是e坐标系下指向正东的单位向量在b系下的向量，与k、i正交
 
 	// Fill rotation matrix
 	Dcmf R;
@@ -531,7 +538,7 @@ bool AttitudeEstimatorQ::init()
 	R.setRow(2, k);
 
 	// Convert to quaternion
-	_q = R;
+	_q = R;//飞机当前姿态在b系的旋转矩阵
 
 	// Compensate for magnetic declination
 	Quatf decl_rotation = Eulerf(0.0f, 0.0f, _mag_decl);
@@ -539,6 +546,7 @@ bool AttitudeEstimatorQ::init()
 
 	_q.normalize();
 
+	// 判断数据是不是有效
 	if (PX4_ISFINITE(_q(0)) && PX4_ISFINITE(_q(1)) &&
 	    PX4_ISFINITE(_q(2)) && PX4_ISFINITE(_q(3)) &&
 	    _q.length() > 0.95f && _q.length() < 1.05f) {
@@ -551,6 +559,7 @@ bool AttitudeEstimatorQ::init()
 	return _inited;
 }
 
+//这里才是姿态估算的核心？
 bool AttitudeEstimatorQ::update(float dt)
 {
 	if (!_inited) {
@@ -558,18 +567,22 @@ bool AttitudeEstimatorQ::update(float dt)
 		if (!_data_good) {
 			return false;
 		}
-
-		return init();
+		// 初始化，第一次运行的时候都可以认为飞机是趴在地面上的
+		return init(); 
 	}
 
+	// _q为外部定义的变量，在这个函数中只会+=不会重新赋值，如果计算出现错误会返回上次计算出的_q
+	// 这里_q就是init()初始化得到的那个 是由 载体->地理坐标系
 	Quatf q_last = _q;
 
 	// Angular rate of correction
-	Vector3f corr;
+	Vector3f corr;//coor包含磁力修正，加速度计修正、（vision、mocap修正）、gyro中测量到的角速度偏转量
+	// 定义一个变量：旋转速率，length函数为平方和开方
 	float spinRate = _gyro.length();
 
+    //首先判断是使用什么mode做修正的，比如vision、mocap、acc和mag
 	if (_ext_hdg_mode > 0 && _ext_hdg_good) {
-		if (_ext_hdg_mode == 1) {
+		if (_ext_hdg_mode == 1) {//基于视觉进行修正
 			// Vision heading correction
 			// Project heading to global frame and extract XY component
 			Vector3f vision_hdg_earth = _q.conjugate(_vision_hdg);
@@ -578,7 +591,7 @@ bool AttitudeEstimatorQ::update(float dt)
 			corr += _q.conjugate_inversed(Vector3f(0.0f, 0.0f, -vision_hdg_err)) * _w_ext_hdg;
 		}
 
-		if (_ext_hdg_mode == 2) {
+		if (_ext_hdg_mode == 2) {//基于mocap进行修正
 			// Mocap heading correction
 			// Project heading to global frame and extract XY component
 			Vector3f mocap_hdg_earth = _q.conjugate(_mocap_hdg);
@@ -591,26 +604,35 @@ bool AttitudeEstimatorQ::update(float dt)
 	if (_ext_hdg_mode == 0 || !_ext_hdg_good) {
 		// Magnetometer correction
 		// Project mag field vector to global frame and extract XY component
-		Vector3f mag_earth = _q.conjugate(_mag);
+		// 基于磁偏角修正
+		Vector3f mag_earth = _q.conjugate(_mag);//将磁偏角从b系转为e系，_q是旋转四元素
+		// 通过arctan（mag_earth(1),mag_earth(0)）得到的角度和前面根据经纬度获取的磁方位角做差值得到误差角度mag_err
+		//用磁力计计算的磁偏角与gps得出来的做差，然后转换到b系
+		//_wrap_pi函数是用于限定结果-pi到pi的函数，大于pi则与2pi做差取补，小于-pi则与2pi做和取补
 		float mag_err = wrap_pi(atan2f(mag_earth(1), mag_earth(0)) - _mag_decl);
 		float gainMult = 1.0f;
 		const float fifty_dps = 0.873f;
 
+		//旋转速率很大的时候就需要放大mag的权重吗？？？TODO
 		if (spinRate > fifty_dps) {
 			gainMult = math::min(spinRate / fifty_dps, 10.0f);
 		}
 
 		// Project magnetometer correction to body frame
+		//_w开头的都是权重，_w_mag为mag的权重，将mag_err从n系转到b系
 		corr += _q.conjugate_inversed(Vector3f(0.0f, 0.0f, -mag_err)) * _w_mag * gainMult;
 	}
 
+	//以上是对偏航的一些修正，yaw的修正
+
 	_q.normalize();
 
-
+	//以下是对roll，pitch的修正，主要是利用重力加速度来修正
 	// Accelerometer correction
 	// Project 'k' unit vector of earth frame to body frame
 	// Vector3f k = _q.conjugate_inversed(Vector3f(0.0f, 0.0f, 1.0f));
 	// Optimized version with dropped zeros
+	// 重力的单位向量转换到b系中，左乘旋转矩阵
 	Vector3f k(
 		2.0f * (_q(1) * _q(3) - _q(0) * _q(2)),
 		2.0f * (_q(2) * _q(3) + _q(0) * _q(1)),
@@ -625,11 +647,15 @@ bool AttitudeEstimatorQ::update(float dt)
 
 	if (_acc_comp || (accel_norm_sq > lower_accel_limit * lower_accel_limit &&
 			  accel_norm_sq < upper_accel_limit * upper_accel_limit)) {
-		corr += (k % (_accel - _pos_acc).normalized()) * _w_accel;
+		// _w_accel为重力加速度的权重
+		// k%（_accel“加速度计的测量值”-位移加速度）的单位化）<约等于重力加速度g>
+		// 运动加速_pos_acc是由前面根据速度微分算出来的
+		corr += (k % (_accel - ·).normalized()) * _w_accel;
 	}
 
 	// Gyro bias estimation
 	if (spinRate < 0.175f) {
+		// 陀螺仪修正，计算陀螺仪误差，这里是什么原理？
 		_gyro_bias += corr * (_w_gyro_bias * dt);
 
 		for (int i = 0; i < 3; i++) {
@@ -638,7 +664,7 @@ bool AttitudeEstimatorQ::update(float dt)
 
 	}
 
-	_rates = _gyro + _gyro_bias;
+	_rates = _gyro + _gyro_bias;//角速度 = 陀螺仪的测量值 + 误差校准
 
 	// Feed forward gyro
 	corr += _rates;
