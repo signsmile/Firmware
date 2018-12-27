@@ -9,11 +9,12 @@
 orb_advert_t mavlink_log_pub = nullptr;
 
 // required standard deviation of estimate for estimator to publish data
-static const uint32_t		EST_STDDEV_XY_VALID = 2.0;	// 2.0 m
-static const uint32_t		EST_STDDEV_Z_VALID = 2.0;	// 2.0 m
-static const uint32_t		EST_STDDEV_TZ_VALID = 2.0;	// 2.0 m
+// TODO 标准偏差用来干嘛？
+static const uint32_t		EST_STDDEV_XY_VALID = 2.0;	// 2.0 m  // x、y方向的标准位置偏差2.0 m
+static const uint32_t		EST_STDDEV_Z_VALID = 2.0;	// 2.0 m  // z方向的标准位置偏差2.0 m
+static const uint32_t		EST_STDDEV_TZ_VALID = 2.0;	// 2.0 m  // 地面的海拔高度的标准偏差2.0 m
 
-static const float P_MAX = 1.0e6f;	// max allowed value in state covariance
+static const float P_MAX = 1.0e6f;	// max allowed value in state covariance   //规定状态协方差的最大值
 static const float LAND_RATE = 10.0f;	// rate of land detector correction
 
 static const char *msg_label = "[lpe] ";	// rate of land detector correction
@@ -23,10 +24,12 @@ BlockLocalPositionEstimator::BlockLocalPositionEstimator() :
 	SuperBlock(nullptr, "LPE"),
 	ModuleParams(nullptr),
 	// subscriptions, set rate, add to list
+	// 订阅消息，这里的订阅的方式有点奇怪，估计是老方法了
 	_sub_armed(ORB_ID(actuator_armed), 1000 / 2, 0, &getSubscriptions()),
 	_sub_land(ORB_ID(vehicle_land_detected), 1000 / 2, 0, &getSubscriptions()),
 	_sub_att(ORB_ID(vehicle_attitude), 1000 / 100, 0, &getSubscriptions()),
 	// set flow max update rate higher than expected to we don't lose packets
+	// 订阅光流传感器的信息
 	_sub_flow(ORB_ID(optical_flow), 1000 / 100, 0, &getSubscriptions()),
 	// main prediction loop, 100 hz
 	_sub_sensor(ORB_ID(sensor_combined), 1000 / 100, 0, &getSubscriptions()),

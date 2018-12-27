@@ -372,7 +372,7 @@ MulticopterAttitudeControl::control_attitude(float dt)
 {
 	//更新期望目标姿态，位置环给出的期望姿态
 	vehicle_attitude_setpoint_poll();
-	_thrust_sp = _v_att_sp.thrust;//推力数据
+	_thrust_sp = _v_att_sp.thrust;//推力数据，这个推力数据是从vehicle_attitude_setpoint消息中来的
 
 	/* prepare yaw weight from the ratio between roll/pitch and yaw gains */
 	Vector3f attitude_gain = _attitude_p;
@@ -506,7 +506,7 @@ MulticopterAttitudeControl::control_attitude_rates(float dt)
 		_rates_int.zero();
 	}
 
-	// 获得当前可用传感器上获得的角速率值。
+	// 获得当前可用传感器上获得的角速率值。这里用的是最原始的陀螺仪的值
 	// get the raw gyro data and correct for thermal errors
 	Vector3f rates;
 
@@ -764,7 +764,7 @@ MulticopterAttitudeControl::run()
 					_rates_sp = man_rate_sp.emult(_acro_rate_max);
 					_thrust_sp = _manual_control_sp.z;
 
-					//手动模式下，直接把遥控器数据给过去，然后直接进入内环
+					//特效模式下，直接把遥控器数据给过去，然后直接进入内环
 					/* publish attitude rates setpoint */
 					_v_rates_sp.roll = _rates_sp(0);
 					_v_rates_sp.pitch = _rates_sp(1);

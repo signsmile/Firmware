@@ -932,6 +932,7 @@ int position_estimator_inav_thread_main(int argc, char *argv[])
 						map_projection_project(&ref, lat, lon, &(gps_proj[0]), &(gps_proj[1]));
 
 						/* reset position estimate when GPS becomes good */
+						//这里会将gps信号直接给到x_est 和y_est
 						if (reset_est) {
 							x_est[0] = gps_proj[0];
 							x_est[1] = gps.vel_n_m_s;
@@ -1268,7 +1269,7 @@ int position_estimator_inav_thread_main(int argc, char *argv[])
 
 			if (use_vision_xy) {
 				eph = fminf(eph, eph_vision);
-
+				//corr_vision 是通过视觉检测到的位置偏差，这个位置偏差对最终的位置影响是由w_权重决定的
 				inertial_filter_correct(corr_vision[0][0], dt, x_est, 0, w_xy_vision_p);
 				inertial_filter_correct(corr_vision[1][0], dt, y_est, 0, w_xy_vision_p);
 

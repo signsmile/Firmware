@@ -70,6 +70,7 @@ Takeoff::on_active()
 		struct position_setpoint_triplet_s *pos_sp_triplet = _navigator->get_position_setpoint_triplet();
 		mission_apply_limitation(_mission_item);
 		mission_item_to_position_setpoint(_mission_item, &pos_sp_triplet->current);
+		// 一旦调用这个函数，navigator就会刷新重发position_setpoint_triplet
 		_navigator->set_position_setpoint_triplet_updated();
 	}
 }

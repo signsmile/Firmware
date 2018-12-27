@@ -404,7 +404,7 @@ private:
 Ekf2::Ekf2():
 	ModuleParams(nullptr),
 	_vehicle_local_position_pub(ORB_ID(vehicle_local_position)),
-	_vehicle_global_position_pub(ORB_ID(vehicle_global_position)),
+	_vehicle_global_position_pub(ORB_ID(vehicle_global_position)), //这个四轴没用到
 	_params(_ekf.getParamHandle()),
 	_obs_dt_min_ms(_params->sensor_interval_min_ms),
 	_mag_delay_ms(_params->mag_delay_ms),
@@ -507,7 +507,7 @@ Ekf2::Ekf2():
 	_optical_flow_sub = orb_subscribe(ORB_ID(optical_flow));
 	_params_sub = orb_subscribe(ORB_ID(parameter_update));
 	_sensor_selection_sub = orb_subscribe(ORB_ID(sensor_selection));
-	_sensors_sub = orb_subscribe(ORB_ID(sensor_combined));
+	_sensors_sub = orb_subscribe(ORB_ID(sensor_combined));//IMU模块
 	_status_sub = orb_subscribe(ORB_ID(vehicle_status));
 	_vehicle_land_detected_sub = orb_subscribe(ORB_ID(vehicle_land_detected));
 
@@ -568,7 +568,7 @@ void Ekf2::update_mag_bias(Param &mag_bias_param, int axis_index)
 	}
 }
 
-void Ekf2::run()
+void Ekf2::run()//主要的函数
 {
 	bool imu_bias_reset_request = false;
 
@@ -585,6 +585,7 @@ void Ekf2::run()
 	sensor_selection_s sensor_selection = {};
 
 	while (!should_exit()) {
+		//只有IMU数据更新了才给执行下去
 		int ret = px4_poll(fds, sizeof(fds) / sizeof(fds[0]), 1000);
 
 		if (!(fds[0].revents & POLLIN)) {
@@ -603,7 +604,7 @@ void Ekf2::run()
 		}
 
 		bool params_updated = false;
-		orb_check(_params_sub, &params_updated);
+		orb_check(_params_sub, &params_updated);//更新参数
 
 		if (params_updated) {
 			// read from param to clear updated flag
@@ -612,6 +613,7 @@ void Ekf2::run()
 			updateParams();
 		}
 
+		//先拿到惯性导航数据给sensors
 		orb_copy(ORB_ID(sensor_combined), _sensors_sub, &sensors);
 
 		// ekf2_timestamps (using 0.1 ms relative timestamps)
@@ -632,7 +634,7 @@ void Ekf2::run()
 		bool vehicle_status_updated = false;
 
 		orb_check(_status_sub, &vehicle_status_updated);
-
+		//更新vehicle_status 数据
 		if (vehicle_status_updated) {
 			if (orb_copy(ORB_ID(vehicle_status), _status_sub, &vehicle_status) == PX4_OK) {
 				// only fuse synthetic sideslip measurements if conditions are met
@@ -650,7 +652,7 @@ void Ekf2::run()
 		// Always update sensor selction first time through if time stamp is non zero
 		if (sensor_selection_updated || (sensor_selection.timestamp == 0)) {
 			sensor_selection_s sensor_selection_prev = sensor_selection;
-
+			//更新所选的sensor，sensor_selection
 			if (orb_copy(ORB_ID(sensor_selection), _sensor_selection_sub, &sensor_selection) == PX4_OK) {
 				if ((sensor_selection_prev.timestamp > 0) && (sensor_selection.timestamp > sensor_selection_prev.timestamp)) {
 					if (sensor_selection.accel_device_id != sensor_selection_prev.accel_device_id) {
@@ -702,7 +704,7 @@ void Ekf2::run()
 
 		if (magnetometer_updated) {
 			vehicle_magnetometer_s magnetometer;
-
+			// 更新指南针数据到magnetometer
 			if (orb_copy(ORB_ID(vehicle_magnetometer), _magnetometer_sub, &magnetometer) == PX4_OK) {
 				// Reset learned bias parameters if there has been a persistant change in magnetometer ID
 				// Do not reset parmameters when armed to prevent potential time slips casued by parameter set
@@ -774,7 +776,7 @@ void Ekf2::run()
 
 		if (airdata_updated) {
 			vehicle_air_data_s airdata;
-
+			//更新气压计数据 airdata
 			if (orb_copy(ORB_ID(vehicle_air_data), _airdata_sub, &airdata) == PX4_OK) {
 				// If the time last used by the EKF is less than specified, then accumulate the
 				// data and push the average when the specified interval is reached.
@@ -833,7 +835,7 @@ void Ekf2::run()
 
 		if (gps_updated) {
 			vehicle_gps_position_s gps;
-
+			// 更新gps数据到 gps
 			if (orb_copy(ORB_ID(vehicle_gps_position), _gps_sub, &gps) == PX4_OK) {
 				struct gps_message gps_msg;
 				gps_msg.time_usec = gps.timestamp;
@@ -864,7 +866,7 @@ void Ekf2::run()
 
 		if (airspeed_updated) {
 			airspeed_s airspeed;
-
+			//更新风速数据到airspeed
 			if (orb_copy(ORB_ID(airspeed), _airspeed_sub, &airspeed) == PX4_OK) {
 				// only set airspeed data if condition for airspeed fusion are met
 				if ((_arspFusionThreshold.get() > FLT_EPSILON) && (airspeed.true_airspeed_m_s > _arspFusionThreshold.get())) {
@@ -884,7 +886,7 @@ void Ekf2::run()
 
 		if (optical_flow_updated) {
 			optical_flow_s optical_flow;
-
+			//更新光流数据到 optical_flow
 			if (orb_copy(ORB_ID(optical_flow), _optical_flow_sub, &optical_flow) == PX4_OK) {
 				flow_message flow;
 				flow.flowdata(0) = optical_flow.pixel_flow_x_integral;
@@ -917,7 +919,7 @@ void Ekf2::run()
 
 			if (range_finder_updated) {
 				distance_sensor_s range_finder;
-
+				// 更新距离传感器
 				if (orb_copy(ORB_ID(distance_sensor), _range_finder_subs[_range_finder_sub_index], &range_finder) == PX4_OK) {
 					// check if distance sensor is within working boundaries
 					if (range_finder.min_distance >= range_finder.current_distance ||
@@ -951,7 +953,7 @@ void Ekf2::run()
 		bool vision_attitude_updated = false;
 		orb_check(_ev_pos_sub, &vision_position_updated);
 		orb_check(_ev_att_sub, &vision_attitude_updated);
-
+		//更新视觉位置
 		if (vision_position_updated || vision_attitude_updated) {
 			// copy both attitude & position if either updated, we need both to fill a single ext_vision_message
 			vehicle_attitude_s ev_att = {};
@@ -987,6 +989,7 @@ void Ekf2::run()
 		orb_check(_vehicle_land_detected_sub, &vehicle_land_detected_updated);
 
 		if (vehicle_land_detected_updated) {
+			//飞机降落检测
 			if (orb_copy(ORB_ID(vehicle_land_detected), _vehicle_land_detected_sub, &vehicle_land_detected) == PX4_OK) {
 				_ekf.set_in_air_status(!vehicle_land_detected.landed);
 			}
@@ -998,7 +1001,7 @@ void Ekf2::run()
 
 		if (landing_target_pose_updated) {
 			landing_target_pose_s landing_target_pose;
-
+			//降落目标位置相关数据
 			if (orb_copy(ORB_ID(landing_target_pose), _landing_target_pose_sub, &landing_target_pose) == PX4_OK) {
 				// we can only use the landing target if it has a fixed position and  a valid velocity estimate
 				if (landing_target_pose.is_static && landing_target_pose.rel_vel_valid) {
@@ -1011,6 +1014,7 @@ void Ekf2::run()
 		}
 
 		// run the EKF update and output
+		// 运算一次扩展卡尔曼滤波，所以最核心的代码应该在这里。。。
 		const bool updated = _ekf.update();
 
 		if (updated) {
@@ -1025,6 +1029,7 @@ void Ekf2::run()
 				_last_time_slip_us = (now - _start_time_us) - _integrated_time_us;
 			}
 
+			//评估得到的四元数
 			matrix::Quatf q;
 			_ekf.copy_quaternion(q.data());
 
@@ -1049,6 +1054,7 @@ void Ekf2::run()
 					_att_pub = orb_advertise(ORB_ID(vehicle_attitude), &att);
 
 				} else {
+					//发布飞机姿态数据
 					orb_publish(ORB_ID(vehicle_attitude), _att_pub, &att);
 				}
 			}
@@ -1152,6 +1158,7 @@ void Ekf2::run()
 			}
 
 			// publish vehicle local position data
+			// 发布vehicle_local_position数据
 			_vehicle_local_position_pub.update();
 
 			if (_ekf.global_position_is_valid() && !_preflt_fail) {
@@ -1195,6 +1202,7 @@ void Ekf2::run()
 				_vehicle_global_position_pub.update();
 			}
 
+			//发布指南针融合后的imu数据
 			{
 				// publish all corrected sensor readings and bias estimates after mag calibration is updated above
 				float accel_bias[3];
@@ -1252,6 +1260,7 @@ void Ekf2::run()
 		status.timeout_flags = 0.0f; // unused
 		status.pre_flt_fail = _preflt_fail;
 
+		//发布估计状态
 		if (_estimator_status_pub == nullptr) {
 			_estimator_status_pub = orb_advertise(ORB_ID(estimator_status), &status);
 
@@ -1326,12 +1335,13 @@ void Ekf2::run()
 					// reset to prevent data being saved too frequently
 					_total_cal_time_us = 0;
 				}
-
+				// 发布风速估计
 				publish_wind_estimate(now);
 			}
 
 			{
 				// publish estimator innovation data
+				//不知道这里的innovation data是指什么
 				ekf2_innovations_s innovations;
 				innovations.timestamp = now;
 				_ekf.get_vel_pos_innov(&innovations.vel_pos_innov[0]);
@@ -1569,10 +1579,12 @@ timestamps from the sensor topics.
 
 int Ekf2::task_spawn(int argc, char *argv[])
 {
+	//父类调用这个，这里其实是真正入口
 	_task_id = px4_task_spawn_cmd("ekf2",
 				      SCHED_DEFAULT,
 				      SCHED_PRIORITY_ESTIMATOR,
 				      6600,
+					  //又回调父类的run_trampoline，run_trampoline运行之类的run，这才真正跑起来
 				      (px4_main_t)&run_trampoline,
 				      (char *const *)argv);
 
@@ -1586,5 +1598,6 @@ int Ekf2::task_spawn(int argc, char *argv[])
 
 int ekf2_main(int argc, char *argv[])
 {
+	//入口
 	return Ekf2::main(argc, argv);
 }
